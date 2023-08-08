@@ -1,76 +1,63 @@
-import os, hashlib, psutil, time, win32serviceutil, win32service, win32event, servicemanager
+import os, psutil, time
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
-class RansomwareMonitor:
-    def __init__(self, folder_path):
-        self.folder_path = folder_path
 
-    def analisar_pasta(self):
-        # Definir algumas variáveis e contadores
-        contador_arquivos = 0
-        contador_arquivos_encriptados = 0
-        contador_chamadas_sistema = 0
-        contador_alto_acesso = 0
-        tempo_inicio = time.time()
+user_folder = os.path.expanduser("~")
+documents_folder = os.path.join(user_folder, "Documentos")
+honeypots_folder = os.path.join(documents_folder, "honeypots")
 
-        # Listar todos os arquivos na pasta e subpastas
-        for root, dirs, files in os.walk(self.folder_path):
-            for file in files:
-                caminho_arquivo = os.path.join(root, file)
-                contador_arquivos += 1
 
-                # Calcular o valor hash de cada arquivo e compará-lo com uma lista conhecida de valores hash para ransomware
-                with open(caminho_arquivo, 'rb') as f:
-                    hash_arquivo = hashlib.sha256(f.read()).hexdigest()
-                    if hash_arquivo in ransomware_hashes:
-                        contador_arquivos_encriptados += 1
+if not os.path.exists(honeypots_folder):
+    os.makedirs(honeypots_folder)
+    for i in range(5):
+        arq = f"arquivo_{i}.txt"
+        filepath = os.path.join(honeypots_folder, arq)
+        with open(filepath, "w") as f:
+            f.write("Este é um arquivo de texto genérico.")
 
-                # Rastrear as chamadas de sistema feitas por cada processo que acessa a pasta e analisá-las para atividades suspeitas
-                for proc in psutil.process_iter(['pid', 'name']):
-                    try:
-                        info_processo = proc.as_dict(attrs=['pid', 'name'])
-                        if info_processo['name'] == 'strace' or info_processo['name'] == 'ltrace':
-                            contador_chamadas_sistema += 1
-                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                        pass
 
-                # Medir o intervalo de tempo entre os eventos de acesso aos arquivos e analisá-los quanto a frequência alta ou padrões incomuns
-                tempo_atual = time.time()
-                if tempo_atual - tempo_inicio < 1:
-                    contador_alto_acesso += 1
+def kill_process(process_name):
+    for proc in psutil.process_iter():
+        try:
+            if proc.name() == process_name:
+                parent = psutil.Process(proc.pid)
+                children = parent.children(recursive=True)
+                for child in children:
+                    child.kill()
+                parent.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
 
-        # Realizar análise estatística nos dados coletados e retornar os resultados
-        proporcao_arquivos_encriptados = contador_arquivos_encriptados / contador_arquivos if contador_arquivos > 0 else 0
-        proporcao_chamadas_sistema = contador_chamadas_sistema / contador_arquivos if contador_arquivos > 0 else 0
-        proporcao_alto_acesso = contador_alto_acesso / contador_arquivos if contador_arquivos > 0 else 0
+class Watcher:
+    def __init__(self):
+        self.observer = Observer()
 
-        return proporcao_arquivos_encriptados, proporcao_chamadas_sistema, proporcao_alto_acesso
+    def run(self):
+        event_handler = Handler()
+        self.observer.schedule(event_handler, path=honeypots_folder, recursive=True)
+        self.observer.start()
+        try:
+            while True:
+                time.sleep(1)
+        except:
+            self.observer.stop()
+            print("Error")
 
-class WhiteBloodService(RansomwareMonitor, win32serviceutil.ServiceFramework):
-    _svc_name_ = "WhiteBlood"
-    _svc_display_name_ = "White Blood"
-    _svc_description_ = "Monitora um diretório em busca de ransomware usando análise estatística"
-    _svc_deps_ = []
+        self.observer.join()
 
-    def __init__(self, args):
-        win32serviceutil.ServiceFramework.__init__(self, args)
-        self.hWaitStop = win32event.CreateEvent(None, 0, 0, None)
-        self.folder_path = '/caminho/para/pasta'
+class Handler(FileSystemEventHandler):
+    @staticmethod
+    def on_any_event(event):
+        if event.is_directory:
+            return None
 
-    def SvcStop(self):
-        self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-        win32event.SetEvent(self.hWaitStop)
+        elif event.event_type == 'modified':
+            process_name = psutil.Process(os.getpid()).name()
+            process_pid = os.getpid()
+            print(f'Processo: {process_name} (PID: {process_pid}) modificou o arquivo {event.src_path}')
+            kill_process(process_name)
 
-    def SvcDoRun(self):
-        servicemanager.LogMsg(servicemanager.EVENTLOG_INFORMATION_TYPE, servicemanager.PYS_SERVICE_STARTED, (self._svc_name_, ''))
-        while True:
-            proporcao_arquivos_encriptados, proporcao_chamadas_sistema, proporcao_alto_acesso = self.analisar_pasta()
-            if proporcao_arquivos_encriptados > 0.5 or proporcao_chamadas_sistema > 0.5 or proporcao_alto_acesso > 0.5:
-                os.system('taskkill /f /im ransomware.exe')
-            time.sleep(60)
-
-# Definir uma lista de valores hash conhecidos para arquivos ransomware
-ransomware_hashes = ['...']
-
-# Registrar e instalar o serviço usando a biblioteca pywin32
 if __name__ == '__main__':
-    win32serviceutil.HandleCommandLine(WhiteBloodService)
+    w = Watcher()
+    w.run()
