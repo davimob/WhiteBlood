@@ -1,0 +1,7 @@
+Instalar:
+
+python whiteblood.py install
+
+Start:
+
+python whiteblood.py start
